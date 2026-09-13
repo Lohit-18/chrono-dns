@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test · python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e ".[dev,web]"
+
+      - name: Lint
+        run: ruff check chronodns tests
+
+      - name: Test
+        run: pytest -v --cov=chronodns --cov-report=term-missing
+
+      - name: Smoke — full pipeline on SQLite
+        run: |
+          python -m chronodns --quiet-log init --reset
+          python -m chronodns --quiet-log dataset --out data/ci.csv --scale 0.4
+          python -m chronodns --quiet-log train --data data/ci.csv
+          python -m chronodns --quiet-log replay --data data/ci.csv --limit 1500 --quiet
+          python -m chronodns --quiet-log report
+          python -m chronodns --quiet-log hunt beacons
+          python -m chronodns --quiet-log explain www.github.com
+
+      - name: Health check
+        run: bash scripts/healthcheck.sh
+
+  postgres:
+    name: test · postgresql backend
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: chronodns
+          POSTGRES_PASSWORD: chronodns
+          POSTGRES_DB: chronodns
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U chronodns"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      CHRONODNS_DB_BACKEND: postgres
+      CHRONODNS_PG_HOST: 127.0.0.1
+      CHRONODNS_PG_USER: chronodns
+      CHRONODNS_PG_PASSWORD: chronodns
+      CHRONODNS_PG_DATABASE: chronodns
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt asyncpg
+          pip install -e ".[dev,web]"
+
+      - name: Apply migrations and run the pipeline against PostgreSQL
+        run: |
+          python -m chronodns --quiet-log init --reset
+          python -m chronodns --quiet-log dataset --out data/ci.csv --scale 0.3
+          python -m chronodns --quiet-log train --data data/ci.csv
+          python -m chronodns --quiet-log replay --data data/ci.csv --limit 1200 --quiet
+          python -m chronodns --quiet-log report
+          python -m chronodns --quiet-log hunt tunnels
+
+      - name: Verify the analytical views and window functions
+        env:
+          PGPASSWORD: chronodns
+        run: |
+          psql -h 127.0.0.1 -U chronodns -d chronodns -c "SELECT COUNT(*) FROM chrono.dns_events;"
+          psql -h 127.0.0.1 -U chronodns -d chronodns -c "SELECT * FROM chrono.v_top_talkers LIMIT 5;"
+          psql -h 127.0.0.1 -U chronodns -d chronodns -c "SELECT * FROM chrono.v_beacon_candidates LIMIT 5;"
+          psql -h 127.0.0.1 -U chronodns -d chronodns -c "REFRESH MATERIALIZED VIEW chrono.mv_hourly_rollup;"
+
+  docker:
+    name: build · docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: chrono-dns:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  shellcheck:
+    name: lint · bash
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck -S warning scripts/*.sh || true

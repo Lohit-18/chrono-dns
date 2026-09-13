@@ -1,0 +1,478 @@
+Chrono-DNS — full demo transcript
+=================================
+Captured with:  ./scripts/demo.sh --fast
+Everything below is unedited output from a clean run.
+
+   ______ __                             ____  _   _ _____
+  / ____// /_   _____ ____   ____   ____ / __ \/ | / // ___/
+ / /    / __ \ / ___// __ \ / __ \ / __ \/ / / /  |/ / \__ \
+/ /___ / / / // /   / /_/ // / / // /_/ / /_/ / /|  / ___/ /
+\____//_/ /_//_/    \____//_/ /_/ \____/_____/_/ |_/ /____/
+
+  Detecting DNS tunnelling, DGA and C2 beaconing with ML + SQL
+
+
+══ ACT 1 — the database ══
+
+Schema, indexes, analytical views and a seeded local threat-intel feed.
+╭──────────────────────────── chronodns init ─────────────────────────────╮
+│ Database ready                                                          │
+│                                                                         │
+│ backend    SQLite                                                       │
+│ location   /home/claude/chrono-dns/data/chronodns.db                    │
+│ migrations 001_schema.sql, 002_indexes.sql, 003_views.sql, 004_seed.sql │
+│                                                                         │
+│ threat_intel   16 rows                                                  │
+│ allowlist      26 rows                                                  │
+│ dns_events     0 rows                                                   │
+│ alerts         0 rows                                                   │
+╰─────────────────────────────────────────────────────────────────────────╯
+
+
+══ ACT 2 — the traffic ══
+
+A synthetic enterprise capture: real users browsing, plus three tunnelling
+tools, six DGA families and three C2 implants sharing the same wire.
+         Synthetic capture          
+╭───────────────┬──────────────────╮
+│ metric        │ value            │
+├───────────────┼──────────────────┤
+│ file          │ data/capture.csv │
+│ total queries │ 9,675            │
+│ hosts         │ 42               │
+│ zones         │ 708              │
+│ span          │ 229.3 min        │
+│ rate          │ 0.7 q/s          │
+╰───────────────┴──────────────────╯
+     Class distribution      
+╭───────────┬───────┬───────╮
+│ label     │ count │ share │
+├───────────┼───────┼───────┤
+│ benign    │ 7,460 │ 77.1% │
+│ tunneling │ 1,440 │ 14.9% │
+│ dga       │ 640   │ 6.6%  │
+│ c2_beacon │ 135   │ 1.4%  │
+╰───────────┴───────┴───────╯
+    Attack families    
+╭─────────────┬───────╮
+│ family      │ count │
+├─────────────┼───────┤
+│ user        │ 7,280 │
+│ dns2tcp     │ 420   │
+│ iodine      │ 420   │
+│ dnscat2     │ 420   │
+│ telemetry   │ 180   │
+│ slowexfil   │ 180   │
+│ beacon      │ 135   │
+│ markov      │ 120   │
+│ base36      │ 117   │
+│ wordlist    │ 108   │
+│ permutation │ 106   │
+│ hashbased   │ 95    │
+╰─────────────┴───────╯
+
+
+══ ACT 3 — the model ══
+
+Random Forest (known attacks) + Isolation Forest (zero-day) over 102 features.
+training on 13,075 queries from generated in-memory (+ adversarial hardening)
+            Model performance (held-out chronological split)             
+╭────────────────────────────┬───────────────┬──────────────────────────╮
+│ metric                     │ value         │                          │
+├────────────────────────────┼───────────────┼──────────────────────────┤
+│ accuracy                   │ 0.9914        │ ███████████████████████· │
+│ weighted F1                │ 0.9913        │ ███████████████████████· │
+│ ROC-AUC (threat vs benign) │ 1.0000        │ ███████████████████████· │
+│ OOB score                  │ 0.9995        │ ███████████████████████· │
+│ detection rate @ block thr │ 0.9614        │ ███████████████████████· │
+│ false-positive rate        │ 0.00000       │ ████████████████████████ │
+│ train / test rows          │ 9,806 / 3,269 │                          │
+│ features                   │ 104           │                          │
+│ train time                 │ 9.29s         │                          │
+╰────────────────────────────┴───────────────┴──────────────────────────╯
+                   Per-class results                    
+╭──────────────┬───────────┬────────┬────────┬─────────╮
+│ class        │ precision │ recall │ f1     │ support │
+├──────────────┼───────────┼────────┼────────┼─────────┤
+│ benign       │ 0.9887    │ 0.9986 │ 0.9936 │ 2182    │
+│ c2_beacon    │ 1.0000    │ 0.9176 │ 0.9570 │ 279     │
+│ dga          │ 0.9888    │ 1.0000 │ 0.9944 │ 266     │
+│ tunneling    │ 1.0000    │ 0.9963 │ 0.9982 │ 542     │
+│ macro avg    │ 0.9944    │ 0.9781 │ 0.9858 │ 3269    │
+│ weighted avg │ 0.9915    │ 0.9914 │ 0.9913 │ 3269    │
+╰──────────────┴───────────┴────────┴────────┴─────────╯
+                  Top 15 discriminative features                   
+╭────┬────────────────────────┬────────────┬──────────────────────╮
+│ #  │ feature                │ importance │                      │
+├────┼────────────────────────┼────────────┼──────────────────────┤
+│ 1  │ zone_uploaded_bytes    │ 0.0724     │ ████████████████████ │
+│ 2  │ zone_bytes_per_query   │ 0.0658     │ ██████████████████·· │
+│ 3  │ tld_length             │ 0.0532     │ ██████████████······ │
+│ 4  │ zone_upload_rate       │ 0.0454     │ ████████████········ │
+│ 5  │ hex_conformance        │ 0.0430     │ ███████████········· │
+│ 6  │ zone_unique_subs       │ 0.0404     │ ███████████········· │
+│ 7  │ subdomain_length       │ 0.0399     │ ███████████········· │
+│ 8  │ zone_query_count       │ 0.0338     │ █████████··········· │
+│ 9  │ tld_risk               │ 0.0319     │ ████████············ │
+│ 10 │ subdomain_share        │ 0.0301     │ ████████············ │
+│ 11 │ label_count            │ 0.0301     │ ████████············ │
+│ 12 │ zone_qps               │ 0.0271     │ ███████············· │
+│ 13 │ shannon_entropy_sub    │ 0.0266     │ ███████············· │
+│ 14 │ zone_sub_novelty       │ 0.0234     │ ██████·············· │
+│ 15 │ bigram_logprob_longest │ 0.0234     │ ██████·············· │
+╰────┴────────────────────────┴────────────┴──────────────────────╯
+ Confusion matrix (rows = truth, cols = predicted)  
+╭───────────┬────────┬───────────┬─────┬───────────╮
+│           │ benign │ c2_beacon │ dga │ tunneling │
+├───────────┼────────┼───────────┼─────┼───────────┤
+│ benign    │ 2179   │ 0         │ 3   │ 0         │
+│ c2_beacon │ 23     │ 256       │ 0   │ 0         │
+│ dga       │ 0      │ 0         │ 266 │ 0         │
+│ tunneling │ 2      │ 0         │ 0   │ 540       │
+╰───────────┴────────┴───────────┴─────┴───────────╯
+
+model saved -> /home/claude/chrono-dns/models/chronodns_model.joblib  version 
+v1-20260913-047f4408ea
+
+
+══ ACT 4 — one query, fully explained ══
+
+Every decision is auditable: which voter objected, and on what evidence.
+╭────────────────────────────────── verdict ──────────────────────────────────╮
+│ mzxw6ytboi7dnnsxs3dbomruwm4tbm5uwy2ltebvgc4tfnzuw4zs.tunnel.example  (NULL) │
+│                                                                             │
+│ verdict        BLOCK                                                        │
+│ threat class   tunneling                                                    │
+│ fused score    0.8564  █████████████████████████·····                       │
+│   supervised   0.7878  ███████████████·····                                 │
+│   anomaly      1.0000  ████████████████████                                 │
+│   heuristic    0.9620  ███████████████████·                                 │
+│ latency        10.595 ms                                                    │
+╰─────────────────────────────────────────────────────────────────────────────╯
+                              Why                               
+╭───┬──────────────────────────────────────────────────────────╮
+│ # │ reason                                                   │
+├───┼──────────────────────────────────────────────────────────┤
+│ 1 │ threat-intel zone match 'tunnel.example' (tunnel, sev 9) │
+│ 2 │ very high subdomain entropy 4.47 bits/char over 52B      │
+│ 3 │ label 52B — 83% of the RFC cap                           │
+│ 4 │ pure base32 alphabet across 52B — encoded payload        │
+│ 5 │ payload is incompressible — not natural language         │
+│ 6 │ NULL record — almost never legitimate                    │
+│ 7 │ 6 consecutive consonants                                 │
+│ 8 │ no recognisable hostname vocabulary                      │
+╰───┴──────────────────────────────────────────────────────────╯
+                       Most anomalous features                        
+╭──────────────────────┬─────────┬──────────────┬────────────────────╮
+│ feature              │ value   │ contribution │                    │
+├──────────────────────┼─────────┼──────────────┼────────────────────┤
+│ zone_bytes_per_query │ 52.0000 │ 0.0623       │ ████████·········· │
+│ tld_length           │ 7.0000  │ 0.0532       │ ███████··········· │
+│ subdomain_length     │ 52.0000 │ 0.0374       │ █████············· │
+│ tld_risk             │ 0.3500  │ 0.0318       │ ████·············· │
+│ zone_uploaded_bytes  │ 52.0000 │ 0.0182       │ ██················ │
+╰──────────────────────┴─────────┴──────────────┴────────────────────╯
+         Key feature values         
+╭───────────────────────┬──────────╮
+│ feature               │ value    │
+├───────────────────────┼──────────┤
+│ shannon_entropy_full  │ 4.5362   │
+│ shannon_entropy_sub   │ 4.4740   │
+│ conditional_entropy   │ 0.9856   │
+│ compression_ratio     │ 1.1346   │
+│ trigram_logprob       │ -12.9428 │
+│ vowel_consonant_ratio │ 0.1892   │
+│ dictionary_hit_ratio  │ 0.0000   │
+│ base32_conformance    │ 1.0000   │
+│ index_of_coincidence  │ 0.0423   │
+│ qname_length          │ 67.0000  │
+│ max_label_length      │ 52.0000  │
+│ label_len_saturation  │ 0.8254   │
+│ qtype_risk            │ 1.0000   │
+│ tld_risk              │ 0.3500   │
+│ subdomain_share       │ 0.7761   │
+╰───────────────────────┴──────────╯
+...and the same pipeline on a legitimate CDN hostname that *looks* random:
+╭─────────────────────── verdict ───────────────────────╮
+│ e4821-a9f3c2d1b7e.akamaiedge.net  (A)                 │
+│                                                       │
+│ verdict        ALLOW                                  │
+│ threat class   benign                                 │
+│ fused score    0.1431  ████·························· │
+│   supervised   0.0235  ····················           │
+│   anomaly      0.3440  ██████··············           │
+│   heuristic    0.3935  ███████·············           │
+│ latency        3.152 ms                               │
+╰───────────────────────────────────────────────────────╯
+                     Why                     
+╭───┬───────────────────────────────────────╮
+│ # │ reason                                │
+├───┼───────────────────────────────────────┤
+│ 1 │ allowlisted: business-critical domain │
+│ 2 │ high subdomain entropy 3.73 bits/char │
+╰───┴───────────────────────────────────────╯
+                         Most anomalous features                         
+╭────────────────────────┬──────────┬──────────────┬────────────────────╮
+│ feature                │ value    │ contribution │                    │
+├────────────────────────┼──────────┼──────────────┼────────────────────┤
+│ hex_conformance        │ 0.9412   │ 0.0302       │ ████·············· │
+│ zone_bytes_per_query   │ 17.0000  │ 0.0270       │ ███··············· │
+│ subdomain_length       │ 17.0000  │ 0.0154       │ ██················ │
+│ digit_ratio            │ 0.5294   │ 0.0151       │ ██················ │
+│ bigram_logprob_longest │ -12.6057 │ 0.0137       │ █················· │
+╰────────────────────────┴──────────┴──────────────┴────────────────────╯
+         Key feature values         
+╭───────────────────────┬──────────╮
+│ feature               │ value    │
+├───────────────────────┼──────────┤
+│ shannon_entropy_full  │ 4.0532   │
+│ shannon_entropy_sub   │ 3.7345   │
+│ conditional_entropy   │ 0.2500   │
+│ compression_ratio     │ 1.4706   │
+│ trigram_logprob       │ -13.0067 │
+│ vowel_consonant_ratio │ 0.7500   │
+│ dictionary_hit_ratio  │ 0.1250   │
+│ base32_conformance    │ 0.7059   │
+│ index_of_coincidence  │ 0.0476   │
+│ qname_length          │ 32.0000  │
+│ max_label_length      │ 17.0000  │
+│ label_len_saturation  │ 0.2698   │
+│ qtype_risk            │ 0.0500   │
+│ tld_risk              │ 0.0800   │
+│ subdomain_share       │ 0.5312   │
+╰───────────────────────┴──────────╯
+
+
+══ ACT 5 — replay the whole capture through the inline engine ══
+
+This is the exact code path the live DNS gateway runs, packet for packet.
+  replaying capture ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 9,675/9,675 0:00:36
+                                 Replay result                                  
+╭─────────────────────────┬──────────────────────────┬─────────────────────────╮
+│ metric                  │ value                    │                         │
+├─────────────────────────┼──────────────────────────┼─────────────────────────┤
+│ queries analysed        │ 9,675                    │                         │
+│ wall time               │ 36.59s                   │                         │
+│ throughput              │ 264 q/s                  │                         │
+│ p50 / p95 / p99 latency │ 2.879 / 9.536 / 10.721   │                         │
+│                         │ ms                       │                         │
+│ blocked                 │ 2,211                    │ █████·················· │
+│                         │                          │ ·                       │
+│ suspicious              │ 4                        │                         │
+│ true threats in capture │ 2,215                    │                         │
+│ threats caught          │ 2,215                    │ 100.00% recall          │
+│ false positives         │ 0                        │ 0.0000% of benign       │
+│ rows persisted          │ 9,675                    │                         │
+╰─────────────────────────┴──────────────────────────┴─────────────────────────╯
+      Detected threat classes       
+╭───────────┬────────────┬─────────╮
+│ class     │ detections │ blocked │
+├───────────┼────────────┼─────────┤
+│ benign    │ 7,457      │ 0       │
+│ tunneling │ 1,441      │ 1,440   │
+│ dga       │ 642        │ 636     │
+│ c2_beacon │ 135        │ 135     │
+╰───────────┴────────────┴─────────╯
+                               Top 10 detections                                
+╭───────┬─────────┬───────────┬──────────────┬────────────────┬────────────────╮
+│ score │ verdict │ class     │ host         │ query          │ why            │
+├───────┼─────────┼───────────┼──────────────┼────────────────┼────────────────┤
+│ 0.898 │ BLOCK   │ dga       │ 10.30.21.226 │ ceb68a9f514322 │ intel match    │
+│       │         │           │              │ 96022.xyz      │ 'xyz' sev 5    │
+│ 0.898 │ BLOCK   │ dga       │ 10.30.33.119 │ b4e4e1d069de93 │ intel match    │
+│       │         │           │              │ 1d626.xyz      │ 'xyz' sev 5    │
+│ 0.897 │ BLOCK   │ dga       │ 10.30.33.119 │ 34eac93c690d56 │ intel match    │
+│       │         │           │              │ .xyz           │ 'xyz' sev 5    │
+│ 0.896 │ BLOCK   │ dga       │ 10.30.21.226 │ 27ea31b96045f2 │ intel match    │
+│       │         │           │              │ .xyz           │ 'xyz' sev 5    │
+│ 0.893 │ BLOCK   │ c2_beacon │ 10.40.47.92  │ 36760ef7f4.c2. │ threat-intel   │
+│       │         │           │              │ example        │ zone match     │
+│       │         │           │              │                │ 'c2.example'   │
+│       │         │           │              │                │ (c2, sev       │
+│ 0.890 │ BLOCK   │ dga       │ 10.30.33.119 │ 85e4e789de5e55 │ intel match    │
+│       │         │           │              │ 481ade4.xyz    │ 'xyz' sev 5    │
+│ 0.890 │ BLOCK   │ c2_beacon │ 10.40.31.66  │ 1c5cdb46cbb8.c │ threat-intel   │
+│       │         │           │              │ 2.example      │ zone match     │
+│       │         │           │              │                │ 'c2.example'   │
+│       │         │           │              │                │ (c2, sev       │
+│ 0.889 │ BLOCK   │ c2_beacon │ 10.40.31.66  │ 110f5bed.c2.ex │ threat-intel   │
+│       │         │           │              │ ample          │ zone match     │
+│       │         │           │              │                │ 'c2.example'   │
+│       │         │           │              │                │ (c2, sev       │
+│ 0.889 │ BLOCK   │ c2_beacon │ 10.40.47.92  │ 8e6f31683c.c2. │ threat-intel   │
+│       │         │           │              │ example        │ zone match     │
+│       │         │           │              │                │ 'c2.example'   │
+│       │         │           │              │                │ (c2, sev       │
+│ 0.889 │ BLOCK   │ dga       │ 10.30.37.167 │ 9e24a218bc8d9e │ intel match    │
+│       │         │           │              │ 7a6a168.xyz    │ 'xyz' sev 5    │
+╰───────┴─────────┴───────────┴──────────────┴────────────────┴────────────────╯
+
+
+══ ACT 6 — hard mode ══
+
+An adversary who has read the detection logic. The honest number.
+╭───────────────────────── why this matters ─────────────────────────╮
+│ Hard-mode evaluation                                               │
+│                                                                    │
+│ Standard synthetic attacks are loud: long labels, base32 payloads, │
+│ NULL records, zero jitter. Every detector scores ~1.00 on them and │
+│ the number tells you nothing.                                      │
+│                                                                    │
+│ This set models an adversary who has read the detection logic:     │
+│   * tunnelling with short labels over A records at a slow rate     │
+│   * dictionary-word DGA with human-looking entropy                 │
+│   * beacons with 35% jitter, well outside the metronome band       │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+                  Detection against evasive traffic (n=2,124)                   
+╭───────────┬─────┬────┬─────┬──────┬───────────┬────────┬─────────┬───────────╮
+│ threshold │ TP  │ FP │ FN  │ TN   │ precision │ recall │ FPR     │           │
+├───────────┼─────┼────┼─────┼──────┼───────────┼────────┼─────────┼───────────┤
+│ 0.45      │ 624 │ 0  │ 0   │ 1500 │ 1.0000    │ 1.0000 │ 0.00000 │ █████████ │
+│           │     │    │     │      │           │        │         │ █████████ │
+│ 0.55      │ 621 │ 0  │ 3   │ 1500 │ 1.0000    │ 0.9952 │ 0.00000 │ █████████ │
+│           │     │    │     │      │           │        │         │ ████████· │
+│ 0.70      │ 602 │ 0  │ 22  │ 1500 │ 1.0000    │ 0.9647 │ 0.00000 │ █████████ │
+│           │     │    │     │      │           │        │         │ ████████· │
+│ 0.85      │ 258 │ 0  │ 366 │ 1500 │ 1.0000    │ 0.4135 │ 0.00000 │ ███████·· │
+│           │     │    │     │      │           │        │         │ ········· │
+╰───────────┴─────┴────┴─────┴──────┴───────────┴────────┴─────────┴───────────╯
+
+threat-class accuracy: 0.9991
+Tip: `chronodns train --harden` adds adversarial samples to the training mix and
+typically recovers most of the lost recall.
+
+
+══ ACT 7 — the SOC report, straight out of SQL ══
+
+ SOC summary — all recorded events  
+╭───────────────────────┬──────────╮
+│ metric                │ value    │
+├───────────────────────┼──────────┤
+│ events                │ 9,675    │
+│ blocked               │ 2,211    │
+│ distinct hosts        │ 42       │
+│ distinct zones        │ 708      │
+│ mean threat score     │ 0.2613   │
+│ peak threat score     │ 0.8979   │
+│ mean analysis latency │ 3.715 ms │
+╰───────────────────────┴──────────╯
+           Threat class breakdown           
+╭───────────┬────────┬─────────┬───────────╮
+│ class     │ events │ blocked │ avg score │
+├───────────┼────────┼─────────┼───────────┤
+│ benign    │ 7,457  │ 0       │ 0.0898    │
+│ tunneling │ 1,441  │ 1440    │ 0.8489    │
+│ dga       │ 642    │ 636     │ 0.8213    │
+│ c2_beacon │ 135    │ 135     │ 0.7984    │
+╰───────────┴────────┴─────────┴───────────╯
+                          Top talkers                           
+╭──────────────┬─────────┬───────┬─────────┬───────────┬───────╮
+│ source       │ queries │ zones │ blocked │ avg score │ max   │
+├──────────────┼─────────┼───────┼─────────┼───────────┼───────┤
+│ 10.20.2.208  │ 480     │ 34    │ 420     │ 0.765     │ 0.867 │
+│ 10.20.38.118 │ 480     │ 33    │ 420     │ 0.725     │ 0.839 │
+│ 10.20.48.128 │ 480     │ 37    │ 420     │ 0.768     │ 0.868 │
+│ 10.10.11.200 │ 260     │ 63    │ 0       │ 0.088     │ 0.213 │
+│ 10.10.13.28  │ 260     │ 58    │ 0       │ 0.088     │ 0.218 │
+│ 10.10.16.247 │ 260     │ 62    │ 0       │ 0.09      │ 0.318 │
+│ 10.10.20.171 │ 260     │ 59    │ 0       │ 0.087     │ 0.208 │
+│ 10.10.23.154 │ 260     │ 54    │ 0       │ 0.089     │ 0.235 │
+│ 10.10.24.148 │ 260     │ 60    │ 0       │ 0.091     │ 0.232 │
+│ 10.10.25.164 │ 260     │ 61    │ 0       │ 0.091     │ 0.22  │
+╰──────────────┴─────────┴───────┴─────────┴───────────┴───────╯
+         Exfiltration leaderboard (zones by uploaded subdomain bytes)          
+╭────────────────┬─────────┬─────────────┬──────────┬─────────────────┬───────╮
+│ zone           │ queries │ unique subs │ bytes up │ avg sub entropy │ hosts │
+├────────────────┼─────────┼─────────────┼──────────┼─────────────────┼───────┤
+│ exfil.example  │ 600     │ 600         │ 47,281   │ 4.7             │ 3     │
+│ c2.example     │ 555     │ 555         │ 38,264   │ 3.644           │ 4     │
+│ tunnel.example │ 420     │ 420         │ 37,726   │ 4.746           │ 1     │
+│ rbl.invalid    │ 138     │ 138         │ 4,125    │ 4.125           │ 31    │
+│ sophosxl.net   │ 112     │ 112         │ 3,276    │ 4.11            │ 34    │
+│ spamhaus.org   │ 103     │ 103         │ 3,045    │ 4.122           │ 35    │
+│ windows.net    │ 107     │ 107         │ 2,840    │ 3.723           │ 33    │
+│ amazonaws.com  │ 129     │ 129         │ 2,657    │ 3.483           │ 35    │
+│ objects.test   │ 135     │ 135         │ 2,263    │ 3.307           │ 33    │
+│ fastly.net     │ 135     │ 135         │ 2,082    │ 3.225           │ 31    │
+╰────────────────┴─────────┴─────────────┴──────────┴─────────────────┴───────╯
+                              Top detections                              
+╭───────┬───────────┬─────────┬──────────────┬───────────────────────────╮
+│ score │ class     │ verdict │ host         │ query                     │
+├───────┼───────────┼─────────┼──────────────┼───────────────────────────┤
+│ 0.898 │ dga       │ BLOCK   │ 10.30.33.119 │ b4e4e1d069de931d626.xyz   │
+│ 0.898 │ dga       │ BLOCK   │ 10.30.21.226 │ ceb68a9f51432296022.xyz   │
+│ 0.897 │ dga       │ BLOCK   │ 10.30.33.119 │ 34eac93c690d56.xyz        │
+│ 0.896 │ dga       │ BLOCK   │ 10.30.21.226 │ 27ea31b96045f2.xyz        │
+│ 0.893 │ c2_beacon │ BLOCK   │ 10.40.47.92  │ 36760ef7f4.c2.example     │
+│ 0.89  │ dga       │ BLOCK   │ 10.30.33.119 │ 85e4e789de5e55481ade4.xyz │
+│ 0.89  │ c2_beacon │ BLOCK   │ 10.40.31.66  │ 1c5cdb46cbb8.c2.example   │
+│ 0.889 │ c2_beacon │ BLOCK   │ 10.40.47.92  │ 8e6f31683c.c2.example     │
+│ 0.889 │ c2_beacon │ BLOCK   │ 10.40.31.66  │ 110f5bed.c2.example       │
+│ 0.889 │ dga       │ BLOCK   │ 10.30.37.167 │ 9e24a218bc8d9e7a6a168.xyz │
+│ 0.888 │ dga       │ BLOCK   │ 10.30.37.167 │ 0d45976e98054.xyz         │
+│ 0.886 │ dga       │ BLOCK   │ 10.30.21.226 │ ddc61f103d68d11ee9.xyz    │
+╰───────┴───────────┴─────────┴──────────────┴───────────────────────────╯
+                                  Open alerts                                   
+╭─────┬──────────────┬──────────────────┬───────────┬──────┬───────────┬───────╮
+│ sev │ host         │ zone             │ class     │ hits │ max score │ bytes │
+├─────┼──────────────┼──────────────────┼───────────┼──────┼───────────┼───────┤
+│ 8   │ 10.20.38.118 │ c2.example       │ tunneling │ 420  │ 0.839     │ 36617 │
+│ 8   │ 10.20.48.128 │ tunnel.example   │ tunneling │ 420  │ 0.868     │ 37726 │
+│ 8   │ 10.20.2.208  │ exfil.example    │ tunneling │ 420  │ 0.867     │ 38297 │
+│ 8   │ 10.20.35.194 │ exfil.example    │ tunneling │ 90   │ 0.867     │ 4474  │
+│ 8   │ 10.20.23.190 │ exfil.example    │ tunneling │ 90   │ 0.867     │ 4510  │
+│ 8   │ 10.40.31.66  │ c2.example       │ c2_beacon │ 45   │ 0.89      │ 544   │
+│ 8   │ 10.40.47.92  │ c2.example       │ c2_beacon │ 45   │ 0.893     │ 548   │
+│ 8   │ 10.40.8.230  │ c2.example       │ c2_beacon │ 45   │ 0.864     │ 555   │
+│ 8   │ 10.30.33.119 │ y3ohu3kx.top     │ dga       │ 1    │ 0.805     │ 0     │
+│ 8   │ 10.30.33.119 │ qebahoxixatenuci │ dga       │ 1    │ 0.855     │ 0     │
+│     │              │ .example         │           │      │           │       │
+╰─────┴──────────────┴──────────────────┴───────────┴──────┴───────────┴───────╯
+
+
+══ ACT 8 — threat hunting with window functions ══
+
+LAG() over (PARTITION BY host, zone ORDER BY ts) finds the metronomes.
+                    Beacon candidates (lowest jitter first)                     
+╭──────────────┬─────────────┬─────────┬────────────┬─────────────┬────────────╮
+│ source_ip    │ registrable │ samples │ interval_s │ variance_s2 │ cv_squared │
+├──────────────┼─────────────┼─────────┼────────────┼─────────────┼────────────┤
+│ 10.40.31.66  │ c2.example  │ 44      │ 59.96      │ 0.6638      │ 0.00018    │
+│ 10.40.47.92  │ c2.example  │ 44      │ 299.42     │ 67.8389     │ 0.00076    │
+│ 10.10.40.251 │ apple.com   │ 29      │ 300.69     │ 156.1236    │ 0.00173    │
+│ 10.10.47.167 │ apple.com   │ 29      │ 59.83      │ 6.5335      │ 0.00183    │
+│ 10.10.52.147 │ apple.com   │ 29      │ 300.06     │ 181.804     │ 0.00202    │
+│ 10.40.8.230  │ c2.example  │ 44      │ 29.52      │ 1.7897      │ 0.00205    │
+│ 10.10.34.49  │ apple.com   │ 29      │ 60.54      │ 8.6737      │ 0.00237    │
+│ 10.10.22.112 │ ntp.org     │ 29      │ 59.96      │ 9.2774      │ 0.00258    │
+│ 10.10.36.13  │ apple.com   │ 29      │ 298.73     │ 231.8933    │ 0.0026     │
+│ 10.20.35.194 │ exfil.examp │ 89      │ 8.93       │ 0.5453      │ 0.00684    │
+│              │ le          │         │            │             │            │
+╰──────────────┴─────────────┴─────────┴────────────┴─────────────┴────────────╯
+
+Note that legitimate update pollers show up here too — this query is a
+lead generator for an analyst, not a blocking decision. The ML makes that.
+
+
+══ ACT 9 — throughput ══
+
+                       Throughput benchmark (n=6,000)                       
+╭───────────────────────────────────────┬─────────┬─────────────┬──────────╮
+│ stage                                 │ seconds │ queries/sec │ ms/query │
+├───────────────────────────────────────┼─────────┼─────────────┼──────────┤
+│ feature extraction (104 features)     │ 2.974   │ 2,017       │ 0.4957   │
+│ ensemble scoring (RF + iForest)       │ 0.135   │ 44,411      │ 0.0225   │
+│ full pipeline (batched)               │ 3.052   │ 1,966       │ 0.5086   │
+│ full pipeline + DB (async, per-query) │ 11.191  │ 268         │ 3.7304   │
+╰───────────────────────────────────────┴─────────┴─────────────┴──────────╯
+Reference: a busy enterprise recursive resolver sees 2,000-20,000 q/s. Anything 
+above that here means the detection layer is not the bottleneck — the network 
+is.
+
+Demo complete.
+
+  chronodns live        animated SOC console
+  chronodns serve       real DNS gateway on 127.0.0.1:5353
+  chronodns dashboard   web UI on http://127.0.0.1:8088
+

@@ -1,0 +1,47 @@
+# --- python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# --- chrono-dns runtime ------------------------------------------------------
+.env
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.csv
+data/logs/
+data/bench.csv
+data/train_report.json
+models/*.joblib
+models/model_card.json
+models/train_report.json
+models/runs/
+
+
+# keep the directories themselves
+!data/.gitkeep
+!models/.gitkeep
+
+# --- editors / os ------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
